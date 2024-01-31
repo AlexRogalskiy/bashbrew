@@ -59,6 +59,8 @@ GitCommit: d7e2a8d90a9b8f5dfd5bcd428e0c33b68c40cc19
 Directory: 1.5
 File: Dockerfile.alpine
 s390x-File: Dockerfile.alpine.s390x.bad-boy
+Builder: buildkit
+GitFetch: refs/heads/having-a-good-time
 
 SharedTags: raspbian
 GitCommit: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
@@ -83,23 +85,6 @@ s390x-File: Dockerfile
 	}
 	fmt.Printf("\n")
 
-	man, err = manifest.Parse(bufio.NewReader(strings.NewReader(`
-# maintainer: InfoSiftr <github@infosiftr.com> (@infosiftr)
-# maintainer: John Smith <jsmith@example.com> (@example-jsmith)
-
-# first set
-a: b@c d
-e: b@c d
-
- # second set
-f: g@h
-i: g@h j
-`)))
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("-------------\nline-based:\n%v\n", man)
-
 	// Output:
 	// -------------
 	// 2822:
@@ -122,9 +107,11 @@ i: g@h j
 	// s390x-GitCommit: b6c460e7cd79b595267870a98013ec3078b490df
 	//
 	// Tags: 1.5-alpine
+	// GitFetch: refs/heads/having-a-good-time
 	// GitCommit: d7e2a8d90a9b8f5dfd5bcd428e0c33b68c40cc19
 	// Directory: 1.5
 	// File: Dockerfile.alpine
+	// Builder: buildkit
 	// s390x-File: Dockerfile.alpine.s390x.bad-boy
 	//
 	// Tags: raspbian-s390x
@@ -145,27 +132,6 @@ i: g@h j
 	//
 	//   - raspbian
 	//     - raspbian-s390x
-	//
-	// -------------
-	// line-based:
-	// Maintainers: InfoSiftr <github@infosiftr.com> (@infosiftr), John Smith <jsmith@example.com> (@example-jsmith)
-	// GitFetch: refs/heads/*
-	//
-	// Tags: a, e
-	// GitRepo: b
-	// GitCommit: c
-	// Directory: d
-	//
-	// Tags: f
-	// GitRepo: g
-	// GitFetch: refs/tags/h
-	// GitCommit: FETCH_HEAD
-	//
-	// Tags: i
-	// GitRepo: g
-	// GitFetch: refs/tags/h
-	// GitCommit: FETCH_HEAD
-	// Directory: j
 }
 
 func ExampleFetch_local() {

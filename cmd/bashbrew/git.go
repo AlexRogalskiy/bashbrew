@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -10,11 +11,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli"
 
 	"github.com/docker-library/bashbrew/manifest"
 	"github.com/docker-library/bashbrew/pkg/execpipe"
+	"github.com/docker-library/bashbrew/pkg/gitfs"
 
 	goGit "github.com/go-git/go-git/v5"
 	goGitConfig "github.com/go-git/go-git/v5/config"
@@ -92,6 +95,42 @@ func getGitCommit(commit string) (string, error) {
 		return "", err
 	}
 	return h.String(), nil
+}
+
+func (r Repo) archGitFS(arch string, entry *manifest.Manifest2822Entry) (fs.FS, error) {
+	commit, err := r.fetchGitRepo(arch, entry)
+	if err != nil {
+		return nil, fmt.Errorf("failed fetching %q: %w", r.EntryIdentifier(entry), err)
+	}
+
+	gitFS, err := gitCommitFS(commit)
+	if err != nil {
+		return nil, err
+	}
+
+	return fs.Sub(gitFS, entry.ArchDirectory(arch))
+}
+
+// returns the timestamp of the ArchGitCommit -- useful for SOURCE_DATE_EPOCH
+func (r Repo) ArchGitTime(arch string, entry *manifest.Manifest2822Entry) (time.Time, error) {
+	f, err := r.archGitFS(arch, entry)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	fi, err := fs.Stat(f, ".")
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return fi.ModTime(), nil
+}
+
+func gitCommitFS(commit string) (fs.FS, error) {
+	if err := ensureGitInit(); err != nil {
+		return nil, err
+	}
+	return gitfs.CommitHash(gitRepo, commit)
 }
 
 func gitStream(args ...string) (io.ReadCloser, error) {
@@ -209,13 +248,8 @@ func (r Repo) fetchGitRepo(arch string, entry *manifest.Manifest2822Entry) (stri
 		}
 		defer os.RemoveAll(tempRefDir)
 
-		tempRef := path.Join(refBase, filepath.Base(tempRefDir))
-		if entry.ArchGitFetch(arch) == manifest.DefaultLineBasedFetch {
-			// backwards compat (see manifest/line-based.go in go-dockerlibrary)
-			fetchStrings[0] += tempRef + "/*"
-		} else {
-			fetchStrings[0] += tempRef + "/temp"
-		}
+		tempRef := path.Join(refBase, filepath.Base(tempRefDir)) + "/temp"
+		fetchStrings[0] += tempRef
 
 		fetchStrings = append([]string{
 			// Git (and more recently, GitHub) support "git fetch"ing a specific commit directly!
@@ -223,7 +257,7 @@ func (r Repo) fetchGitRepo(arch string, entry *manifest.Manifest2822Entry) (stri
 			// https://github.com/git/git/commit/f8edeaa05d8623a9f6dad408237496c51101aad8
 			// https://github.com/go-git/go-git/pull/58
 			// If that works, we want to prefer it (since it'll be much more efficient at getting us the commit we care about), so we prepend it to our list of "things to try fetching"
-			entryArchGitCommit + ":" + tempRef + "/temp",
+			entryArchGitCommit + ":" + tempRef,
 		}, fetchStrings...)
 	}
 
@@ -250,13 +284,14 @@ func (r Repo) fetchGitRepo(arch string, entry *manifest.Manifest2822Entry) (stri
 			//Progress: os.Stdout,
 		})
 		if err != nil {
-			fetchErrors = append(fetchErrors, err)
+			fetchErrors = append(fetchErrors, fmt.Errorf("failed fetching %q: %w", fetchString, err))
 			continue
 		}
 
-		commit, err = getGitCommit(entry.ArchGitCommit(arch))
+		archCommit := entry.ArchGitCommit(arch)
+		commit, err = getGitCommit(archCommit)
 		if err != nil {
-			fetchErrors = append(fetchErrors, err)
+			fetchErrors = append(fetchErrors, fmt.Errorf("failed finding Git commit %q after fetching %q: %w", archCommit, fetchString, err))
 			continue
 		}
 

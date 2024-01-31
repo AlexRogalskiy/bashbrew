@@ -27,14 +27,10 @@ export BASHBREW_LIBRARY="$tmp/library"
 eval "${GENERATE_STACKBREW_LIBRARY:-./generate-stackbrew-library.sh}" > "$BASHBREW_LIBRARY/$image"
 
 # if we don't appear to be able to fetch the listed commits, they might live in a PR branch, so we should force them into the Bashbrew cache directly to allow it to do what it needs
-if ! bashbrew from "$image" &> /dev/null; then
-	bashbrewGit="${BASHBREW_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/bashbrew}/git"
-	if [ ! -d "$bashbrewGit" ]; then
-		# if we're here, it's because "bashbrew from" failed so our cache directory might not have been created
-		bashbrew from https://github.com/docker-library/official-images/raw/HEAD/library/hello-world:latest > /dev/null
-	fi
-	git -C "$bashbrewGit" fetch --quiet --update-shallow "$PWD" HEAD > /dev/null
-	bashbrew from "$image" > /dev/null
+if ! bashbrew fetch "$image" &> /dev/null; then
+	gitCache="$(bashbrew cat --format '{{ gitCache }}' "$image")"
+	git -C "$gitCache" fetch --quiet --update-shallow "$PWD" HEAD > /dev/null
+	bashbrew fetch "$image" > /dev/null
 fi
 
 tags="$(bashbrew list --build-order --uniq "$image")"
@@ -55,8 +51,10 @@ for tag in $tags; do
 				"tags": {{- json ($.Tags namespace false $e) -}},
 				"directory": {{- json ($e.ArchDirectory $arch) -}},
 				"file": {{- json ($e.ArchFile $arch) -}},
+				"builder": {{- json ($e.ArchBuilder $arch) -}},
 				"constraints": {{- json $e.Constraints -}},
-				"froms": {{- json ($.ArchDockerFroms $arch $e) -}}
+				"froms": {{- json ($.ArchDockerFroms $arch $e) -}},
+				"platform": {{- json (ociPlatform $arch).String -}}
 			{{- "}" -}}
 		' "$bashbrewImage" | jq -c '
 			{
@@ -77,7 +75,19 @@ for tag in $tags; do
 				runs: {
 					build: (
 						[
-							"docker build"
+							# https://github.com/docker-library/bashbrew/pull/43
+							if .builder == "classic" or .builder == "" then
+								"DOCKER_BUILDKIT=0 docker build"
+							elif .builder == "buildkit" then
+								"docker buildx build --progress plain --build-arg BUILDKIT_SYNTAX=\"$BASHBREW_BUILDKIT_SYNTAX\""
+							# TODO elif .builder == "oci-import" then ????
+							else
+								"echo >&2 " + ("error: unknown/unsupported builder: " + .builder | @sh) + "\nexit 1\n#"
+							end
+						]
+						+ [
+							# TODO error out on unsupported platforms, or just let the emulation go wild?
+							"--platform", .platform
 						]
 						+ (
 							.tags
@@ -96,14 +106,26 @@ for tag in $tags; do
 						| join(" ")
 					),
 					history: ("docker history " + (.tags[0] | @sh)),
-					test: ("~/oi/test/run.sh " + (.tags[0] | @sh)),
+					test: (
+						[
+							"set -- " + (.tags[0] | @sh),
+							# https://github.com/docker-library/bashbrew/issues/46#issuecomment-1152567694 (allow local test config / tests)
+							"if [ -s ./.test/config.sh ]; then set -- --config ~/oi/test/config.sh --config ./.test/config.sh \"$@\"; fi",
+							"~/oi/test/run.sh \"$@\""
+						] | join("\n")
+					),
 				},
 			}
 		'
 	)"
 
-	parent="$(bashbrew parents "$bashbrewImage" | tail -1)" # if there ever exists an image with TWO parents in the same repo, this will break :)
-	if [ -n "$parent" ]; then
+	if parent="$(bashbrew parents --depth=1 "$bashbrewImage" | grep "^${tag%%:*}:")" && [ -n "$parent" ]; then
+		if [ "$(wc -l <<<"$parent")" -ne 1 ]; then
+			echo >&2 "error: '$tag' has multiple parents in the same repository and this script can't handle that yet!"
+			echo >&2 "$parent"
+			exit 1
+		fi
+		parent="$(bashbrew parents "$bashbrewImage" | grep "^${tag%%:*}:" | tail -1)" # get the "ultimate" this-repo parent
 		parentBashbrewImage="${parent##*/}" # account for BASHBREW_NAMESPACE being set
 		parent="$(bashbrew list --uniq "$parentBashbrewImage")" # normalize
 		parentMeta="${metas["$parent"]}"
@@ -131,6 +153,19 @@ done
 
 strategy="$(
 	for tag in "${order[@]}"; do
+		# envObjectToGitHubEnvFileJQ converts from the output of ~/oi/.bin/bashbrew-buildkit-env-setup.sh into what GHA expects in $GITHUB_ENV
+		# (in a separate env to make embedding/quoting easier inside this sub-jq that generates JSON that embeds shell scripts)
+		envObjectToGitHubEnvFileJQ='
+			to_entries | map(
+				(.key | if test("[^a-zA-Z0-9_]+") then
+					error("invalid env key: \(.)")
+				else . end)
+				+ "="
+				+ (.value | if test("[\r\n]+") then
+					error("invalid env value: \(.)")
+				else . end)
+			) | join("\n")
+		' \
 		jq -c '
 			.meta += {
 				froms: (
@@ -158,6 +193,25 @@ strategy="$(
 						end
 					),
 					"git clone --depth 1 https://github.com/docker-library/official-images.git -b master ~/oi",
+
+					(
+						"# https://github.com/docker-library/bashbrew/pull/43",
+						if ([ .meta.entries[].builder ] | index("buildkit")) then
+							# https://github.com/docker-library/bashbrew/pull/70#issuecomment-1461033890 (we need to _not_ set BASHBREW_ARCH here)
+							"if [ -x ~/oi/.bin/bashbrew-buildkit-env-setup.sh ]; then",
+							"\t# https://github.com/docker-library/official-images/pull/14212",
+							"\tbuildkitEnvs=\"$(~/oi/.bin/bashbrew-buildkit-env-setup.sh)\"",
+							"\tjq <<<\"$buildkitEnvs\" -r \(env.envObjectToGitHubEnvFileJQ | @sh) | tee -a \"$GITHUB_ENV\"",
+							"else",
+							"\tBASHBREW_BUILDKIT_SYNTAX=\"$(< ~/oi/.bashbrew-buildkit-syntax)\"; export BASHBREW_BUILDKIT_SYNTAX",
+							"\tprintf \"BASHBREW_BUILDKIT_SYNTAX=%q\\n\" \"$BASHBREW_BUILDKIT_SYNTAX\" >> \"$GITHUB_ENV\"",
+							"fi",
+							empty
+						else
+							empty
+						end
+					),
+
 					"# create a dummy empty image/layer so we can --filter since= later to get a meaningful image list",
 					"{ echo FROM " + (
 						if .os | startswith("windows-") then
@@ -165,19 +219,7 @@ strategy="$(
 						else
 							"busybox:latest"
 						end
-					) + "; echo RUN :; } | docker build --no-cache --tag image-list-marker -",
-					(
-						if (env.BASHBREW_GENERATE_SKIP_PGP_PROXY) or (.os | startswith("windows-")) then
-							empty
-						else
-							(
-								"# PGP Happy Eyeballs",
-								"git clone --depth 1 https://github.com/tianon/pgp-happy-eyeballs.git ~/phe",
-								"~/phe/hack-my-builds.sh",
-								"rm -rf ~/phe"
-							)
-						end
-					)
+					) + "; echo RUN :; } | docker build --no-cache --tag image-list-marker -"
 				] | join("\n")),
 				pull: ([ .meta.froms[] | select(. != "scratch") | "docker pull " + @sh ] | join("\n")),
 				# build

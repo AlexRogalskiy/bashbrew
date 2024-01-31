@@ -9,18 +9,38 @@ import (
 	"strings"
 )
 
+type ManifestNotFoundError struct {
+	Library string
+	Repo    string
+}
+
+func (err ManifestNotFoundError) Error() string {
+	return fmt.Sprintf("unable to find a manifest named %q (in %q or as a remote URL)", err.Repo, err.Library)
+}
+
+type TagNotFoundError struct {
+	Repo string
+	Tag  string
+}
+
+func (err TagNotFoundError) Error() string {
+	return fmt.Sprintf("tag not found in manifest for %q: %q", err.Repo, err.Tag)
+}
+
 func validateTagName(man *Manifest2822, repoName, tagName string) error {
 	if tagName != "" && (man.GetTag(tagName) == nil && len(man.GetSharedTag(tagName)) == 0) {
-		return fmt.Errorf("tag not found in manifest for %q: %q", repoName, tagName)
+		return TagNotFoundError{repoName, tagName}
 	}
 	return nil
 }
 
 // "library" is the default "library directory"
 // returns the parsed version of (in order):
-//   if "repo" is a URL, the remote contents of that URL
-//   if "repo" is a relative path like "./repo", that file
-//   the file "library/repo"
+//
+//	if "repo" is a URL, the remote contents of that URL
+//	if "repo" is a relative path like "./repo", that file
+//	the file "library/repo"
+//
 // (repoName, tagName, man, err)
 func Fetch(library, repo string) (string, string, *Manifest2822, error) {
 	repoName := filepath.Base(repo)
@@ -48,7 +68,7 @@ func Fetch(library, repo string) (string, string, *Manifest2822, error) {
 
 	// try file paths
 	filePaths := []string{}
-	if filepath.IsAbs(repo) || strings.IndexRune(repo, filepath.Separator) >= 0 || strings.IndexRune(repo, '/') >= 0 {
+	if filepath.IsAbs(repo) || strings.ContainsRune(repo, filepath.Separator) || strings.ContainsRune(repo, '/') {
 		filePaths = append(filePaths, repo)
 	}
 	if !filepath.IsAbs(repo) {
@@ -69,5 +89,5 @@ func Fetch(library, repo string) (string, string, *Manifest2822, error) {
 		}
 	}
 
-	return repoName, tagName, nil, fmt.Errorf("unable to find a manifest named %q (in %q or as a remote URL)", repo, library)
+	return repoName, tagName, nil, ManifestNotFoundError{library, repo}
 }

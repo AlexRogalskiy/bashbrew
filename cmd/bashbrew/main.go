@@ -3,10 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/sirupsen/logrus" // this is used by containerd libraries, so we need to set the default log level for it
 	"github.com/urfave/cli"
+	xTerm "golang.org/x/term"
 
 	"github.com/docker-library/bashbrew/architecture"
 	"github.com/docker-library/bashbrew/manifest"
@@ -163,6 +166,13 @@ func main() {
 			debugFlag = c.GlobalBool("debug")
 			noSortFlag = c.GlobalBool("no-sort")
 
+			if !debugFlag {
+				// containerd uses logrus, but it defaults to "info" (which is a bit leaky where we use containerd)
+				logrus.SetLevel(logrus.WarnLevel)
+			} else {
+				logrus.SetLevel(logrus.DebugLevel)
+			}
+
 			arch = c.GlobalString("arch")
 			namespace = c.GlobalString("namespace")
 			constraints = c.GlobalStringSlice("constraint")
@@ -180,6 +190,10 @@ func main() {
 
 			archNamespaces = map[string]string{}
 			for _, archMapping := range c.GlobalStringSlice("arch-namespace") {
+				if archMapping == "" {
+					// "BASHBREW_ARCH_NAMESPACES=" (should be the same as the empty list)
+					continue
+				}
 				splitArchMapping := strings.SplitN(archMapping, "=", 2)
 				splitArch, splitNamespace := strings.TrimSpace(splitArchMapping[0]), strings.TrimSpace(splitArchMapping[1])
 				archNamespaces[splitArch] = splitNamespace
@@ -216,6 +230,10 @@ func main() {
 			Name:  "arch-filter",
 			Usage: "like apply-constraints, but only for Architectures",
 		},
+		"build-order": cli.BoolFlag{
+			Name:  "build-order",
+			Usage: "sort by the order repos would need to build (topsort)",
+		},
 		"depth": cli.IntFlag{
 			Name:  "depth",
 			Value: 0,
@@ -233,6 +251,11 @@ func main() {
 			Name:  "target-namespace",
 			Usage: `target namespace to act into ("docker tag namespace/repo:tag target-namespace/repo:tag", "docker push target-namespace/repo:tag")`,
 		},
+
+		"json": cli.BoolFlag{
+			Name:  "json",
+			Usage: "output machine-readable JSON instead of human-readable text",
+		},
 	}
 
 	app.Commands = []cli.Command{
@@ -245,10 +268,7 @@ func main() {
 				commonFlags["uniq"],
 				commonFlags["apply-constraints"],
 				commonFlags["arch-filter"],
-				cli.BoolFlag{
-					Name:  "build-order",
-					Usage: "sort by the order repos would need to build (topsort)",
-				},
+				commonFlags["build-order"],
 				cli.BoolFlag{
 					Name:  "repos",
 					Usage: `list only repos, not repo:tag (unless "repo:tag" is explicitly specified)`,
@@ -331,7 +351,7 @@ func main() {
 				commonFlags["uniq"],
 			},
 			Before: subcommandBeforeFactory("children"),
-			Action: cmdOffspring,
+			Action: cmdChildren,
 
 			Category: "plumbing",
 		},
@@ -367,6 +387,7 @@ func main() {
 					Name:  "format-file, F",
 					Usage: "use the contents of `FILE` for \"--format\"",
 				},
+				commonFlags["build-order"],
 			},
 			Before: subcommandBeforeFactory("cat"),
 			Action: cmdCat,
@@ -388,6 +409,90 @@ func main() {
 			Action: cmdFrom,
 
 			Category: "plumbing",
+		},
+		{
+			Name:  "fetch",
+			Usage: "ensure Git contents are local",
+			Flags: []cli.Flag{
+				commonFlags["all"],
+				commonFlags["apply-constraints"],
+				commonFlags["arch-filter"],
+			},
+			Before: subcommandBeforeFactory("fetch"),
+			Action: cmdFetch,
+
+			Category: "plumbing",
+		},
+		{
+			Name:  "context",
+			Usage: "(eventually Dockerfile-filtered) git archive",
+			Flags: []cli.Flag{
+				cli.BoolFlag{
+					Name:  "sha256",
+					Usage: `print sha256 instead of raw tar`,
+				},
+				// TODO "unfiltered" or something for not applying Dockerfile filtering (once that's implemented)
+			},
+			Before: subcommandBeforeFactory("context"),
+			Action: func(c *cli.Context) error {
+				repos, err := repos(false, c.Args()...)
+				if err != nil {
+					return err
+				}
+				if len(repos) != 1 {
+					return fmt.Errorf("'context' expects to act on exactly one architecture of one entry of one repo (got %d repos)", len(repos))
+				}
+
+				r, err := fetch(repos[0])
+				if err != nil {
+					return err
+				}
+
+				// TODO technically something like "hello-world:latest" *could* be relaxed a little if it resolves via architecture to one and only one entry 🤔 (but that's a little hard to implement with the existing internal data structures -- see TODO at the top of "sort.go")
+
+				if r.TagEntry == nil {
+					return fmt.Errorf("'context' expects to act on exactly one architecture of one entry of one repo (no specific entry of %q selected)", r.RepoName)
+				}
+				if len(r.TagEntries) != 1 {
+					return fmt.Errorf("'context' expects to act on exactly one architecture of one entry of one repo (got %d entires)", len(r.TagEntries))
+				}
+
+				if !r.TagEntry.HasArchitecture(arch) {
+					return fmt.Errorf("%q does not include architecture %q", path.Join(namespace, r.RepoName)+":"+r.TagEntry.Tags[0], arch)
+				}
+
+				if c.Bool("sha256") {
+					sum, err := r.ArchGitChecksum(arch, r.TagEntry)
+					if err != nil {
+						return err
+					}
+					fmt.Println(sum)
+					return nil
+				} else {
+					if xTerm.IsTerminal(int(os.Stdout.Fd())) {
+						return fmt.Errorf("cowardly refusing to output a tar to a terminal")
+					}
+					return r.archContextTar(arch, r.TagEntry, os.Stdout)
+				}
+			},
+
+			Category: "plumbing",
+		},
+		{
+			Name:     "remote",
+			Usage:    "query registries for bashbrew-related data",
+			Before:   subcommandBeforeFactory("remote"),
+			Category: "plumbing",
+			Subcommands: []cli.Command{
+				{
+					Name:  "arches",
+					Usage: "returns a list of bashbrew architectures and content descriptors for the specified image(s)",
+					Flags: []cli.Flag{
+						commonFlags["json"],
+					},
+					Action: cmdRemoteArches,
+				},
+			},
 		},
 	}
 

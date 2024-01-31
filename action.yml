@@ -1,0 +1,12 @@
+run-name: Deploy to ${{ inputs.deploy_target }} by @${{ github.actor }}
+on:
+  branch_protection_rule:
+    types: [created, deleted]
+    on:
+  check_run:
+    types: [rerequested, completed]
+    on:
+  check_suite:
+    types: [completed]
+   
+ 

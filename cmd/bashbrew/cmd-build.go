@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/urfave/cli"
 )
@@ -76,9 +77,15 @@ func cmdBuild(c *cli.Context) error {
 			if err != nil {
 				return cli.NewMultiError(fmt.Errorf(`failed calculating "cache hash" for %q (tags %q)`, r.RepoName, entry.TagsString()), err)
 			}
+			imageTags := r.Tags(namespace, uniq, entry)
+			tags := append([]string{cacheTag}, imageTags...)
 
 			// check whether we've already built this artifact
-			_, err = dockerInspect("{{.Id}}", cacheTag)
+			cachedDesc, err := containerdImageLookup(cacheTag)
+			if err != nil {
+				cachedDesc = nil
+				_, err = dockerInspect("{{.Id}}", cacheTag)
+			}
 			if err != nil {
 				fmt.Printf("Building %s (%s)\n", cacheTag, r.EntryIdentifier(entry))
 				if !dryRun {
@@ -87,37 +94,64 @@ func cmdBuild(c *cli.Context) error {
 						return cli.NewMultiError(fmt.Errorf(`failed fetching git repo for %q (tags %q)`, r.RepoName, entry.TagsString()), err)
 					}
 
-					archive, err := gitArchive(commit, entry.ArchDirectory(arch))
-					if err != nil {
-						return cli.NewMultiError(fmt.Errorf(`failed generating git archive for %q (tags %q)`, r.RepoName, entry.TagsString()), err)
-					}
-					defer archive.Close()
+					switch builder := entry.ArchBuilder(arch); builder {
+					case "buildkit", "classic", "":
+						var platform string
+						if fromScratch {
+							platform = ociArch.String()
+						}
 
-					// TODO use "meta.StageNames" to do "docker build --target" so we can tag intermediate stages too for cache (streaming "git archive" directly to "docker build" makes that a little hard to accomplish without re-streaming)
+						archive, err := gitArchive(commit, entry.ArchDirectory(arch))
+						if err != nil {
+							return cli.NewMultiError(fmt.Errorf(`failed generating git archive for %q (tags %q)`, r.RepoName, entry.TagsString()), err)
+						}
+						defer archive.Close()
 
-					var extraEnv []string = nil
-					if fromScratch {
-						// https://github.com/docker/cli/blob/v20.10.7/cli/command/image/build.go#L163
-						extraEnv = []string{"DOCKER_DEFAULT_PLATFORM=" + ociArch.String()}
-						// ideally, we would set this via an explicit "--platform" flag on "docker build", but it's not supported without buildkit until 20.10+ and this is a trivial way to get Docker to do the right thing in both cases without explicitly trying to detect whether we're on 20.10+
-					}
+						if builder == "buildkit" {
+							err = dockerBuildxBuild(tags, entry.ArchFile(arch), archive, platform)
+						} else {
+							// TODO use "meta.StageNames" to do "docker build --target" so we can tag intermediate stages too for cache (streaming "git archive" directly to "docker build" makes that a little hard to accomplish without re-streaming)
+							err = dockerBuild(tags, entry.ArchFile(arch), archive, platform)
+						}
+						if err != nil {
+							return cli.NewMultiError(fmt.Errorf(`failed building %q (tags %q)`, r.RepoName, entry.TagsString()), err)
+						}
 
-					err = dockerBuild(cacheTag, entry.ArchFile(arch), archive, extraEnv)
-					if err != nil {
-						return cli.NewMultiError(fmt.Errorf(`failed building %q (tags %q)`, r.RepoName, entry.TagsString()), err)
+						archive.Close() // be sure this happens sooner rather than later (defer might take a while, and we want to reap zombies more aggressively)
+
+					case "oci-import":
+						desc, err := ociImportBuild(tags, commit, entry.ArchDirectory(arch), entry.ArchFile(arch))
+						if err != nil {
+							return cli.NewMultiError(fmt.Errorf(`failed oci-import build of %q (tags %q)`, r.RepoName, entry.TagsString()), err)
+						}
+
+						fmt.Printf("Importing %s (%s) into Docker\n", r.EntryIdentifier(entry), desc.Digest)
+						err = containerdDockerLoad(*desc, imageTags)
+						if err != nil {
+							return cli.NewMultiError(fmt.Errorf(`failed oci-import into Docker of %q (tags %q)`, r.RepoName, entry.TagsString()), err)
+						}
+
+					default:
+						return cli.NewMultiError(fmt.Errorf(`unknown builder %q`, builder))
 					}
-					archive.Close() // be sure this happens sooner rather than later (defer might take a while, and we want to reap zombies more aggressively)
 				}
 			} else {
 				fmt.Printf("Using %s (%s)\n", cacheTag, r.EntryIdentifier(entry))
-			}
 
-			for _, tag := range r.Tags(namespace, uniq, entry) {
-				fmt.Printf("Tagging %s\n", tag)
 				if !dryRun {
-					err := dockerTag(cacheTag, tag)
-					if err != nil {
-						return cli.NewMultiError(fmt.Errorf(`failed tagging %q as %q`, cacheTag, tag), err)
+					if cachedDesc == nil {
+						// https://github.com/docker-library/bashbrew/pull/61#discussion_r1044926620
+						// abusing "docker build" for "tag something a lot of times, but efficiently" 👀
+						err := dockerBuild(imageTags, "", strings.NewReader("FROM "+cacheTag), "")
+						if err != nil {
+							return cli.NewMultiError(fmt.Errorf(`failed tagging %q: %q`, cacheTag, strings.Join(imageTags, ", ")), err)
+						}
+					} else {
+						fmt.Printf("Importing %s into Docker\n", cachedDesc.Digest)
+						err = containerdDockerLoad(*cachedDesc, tags)
+						if err != nil {
+							return cli.NewMultiError(fmt.Errorf(`failed (re-)import into Docker of %q (tags %q)`, r.RepoName, entry.TagsString()), err)
+						}
 					}
 				}
 			}

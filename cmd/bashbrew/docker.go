@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/urfave/cli"
 	"github.com/docker-library/bashbrew/manifest"
+	"github.com/urfave/cli"
 )
 
 type dockerfileMetadata struct {
@@ -53,6 +53,14 @@ func (r Repo) dockerfileMetadata(entry *manifest.Manifest2822Entry) (*dockerfile
 var dockerfileMetadataCache = map[string]*dockerfileMetadata{}
 
 func (r Repo) archDockerfileMetadata(arch string, entry *manifest.Manifest2822Entry) (*dockerfileMetadata, error) {
+	if builder := entry.ArchBuilder(arch); builder == "oci-import" {
+		return &dockerfileMetadata{
+			Froms: []string{
+				"scratch",
+			},
+		}, nil
+	}
+
 	commit, err := r.fetchGitRepo(arch, entry)
 	if err != nil {
 		return nil, cli.NewMultiError(fmt.Errorf("failed fetching Git repo for arch %q from entry %q", arch, entry.String()), err)
@@ -218,6 +226,11 @@ func (r Repo) dockerBuildUniqueBits(entry *manifest.Manifest2822Entry) ([]string
 		entry.ArchDirectory(arch),
 		entry.ArchFile(arch),
 	}
+	if builder := entry.ArchBuilder(arch); builder != "" {
+		// NOTE: preserve long-term unique id by only attaching builder if
+		// explicitly specified
+		uniqueBits = append(uniqueBits, entry.ArchBuilder(arch))
+	}
 	meta, err := r.dockerfileMetadata(entry)
 	if err != nil {
 		return nil, err
@@ -237,14 +250,27 @@ func (r Repo) dockerBuildUniqueBits(entry *manifest.Manifest2822Entry) ([]string
 	return uniqueBits, nil
 }
 
-func dockerBuild(tag string, file string, context io.Reader, extraEnv []string) error {
-	args := []string{"build", "--tag", tag, "--file", file, "--rm", "--force-rm"}
-	args = append(args, "-")
+func dockerBuild(tags []string, file string, context io.Reader, platform string) error {
+	args := []string{"build"}
+	for _, tag := range tags {
+		args = append(args, "--tag", tag)
+	}
+	if file != "" {
+		args = append(args, "--file", file)
+	}
+	args = append(args, "--rm", "--force-rm", "-")
+
 	cmd := exec.Command("docker", args...)
-	if extraEnv != nil {
-		cmd.Env = append(os.Environ(), extraEnv...)
+	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=0")
+	if debugFlag {
+		fmt.Println("$ export DOCKER_BUILDKIT=0")
+	}
+	if platform != "" {
+		// ideally, we would set this via an explicit "--platform" flag on "docker build", but it's not supported without buildkit until 20.10+ and this is a trivial way to get Docker to do the right thing in both cases without explicitly trying to detect whether we're on 20.10+
+		// https://github.com/docker/cli/blob/v20.10.7/cli/command/image/build.go#L163
+		cmd.Env = append(cmd.Env, "DOCKER_DEFAULT_PLATFORM="+platform)
 		if debugFlag {
-			fmt.Printf("$ export %q\n", extraEnv)
+			fmt.Printf("$ export DOCKER_DEFAULT_PLATFORM=%q\n", platform)
 		}
 	}
 	cmd.Stdin = context
@@ -258,6 +284,113 @@ func dockerBuild(tag string, file string, context io.Reader, extraEnv []string) 
 		cmd.Stdout = buf
 		cmd.Stderr = buf
 		err := cmd.Run()
+		if err != nil {
+			err = cli.NewMultiError(err, fmt.Errorf(`docker %q output:%s`, args, "\n"+buf.String()))
+		}
+		return err
+	}
+}
+
+const (
+	dockerfileSyntaxEnv = "BASHBREW_BUILDKIT_SYNTAX"
+	sbomGeneratorEnv    = "BASHBREW_BUILDKIT_SBOM_GENERATOR"
+	buildxBuilderEnv    = "BUILDX_BUILDER"
+)
+
+func dockerBuildxBuild(tags []string, file string, context io.Reader, platform string) error {
+	dockerfileSyntax, ok := os.LookupEnv(dockerfileSyntaxEnv)
+	if !ok {
+		return fmt.Errorf("missing %q", dockerfileSyntaxEnv)
+	}
+
+	args := []string{
+		"buildx",
+		"build",
+		"--progress", "plain",
+		"--build-arg", "BUILDKIT_SYNTAX=" + dockerfileSyntax,
+	}
+	buildxBuilder := "" != os.Getenv(buildxBuilderEnv)
+	if buildxBuilder {
+		args = append(args, "--provenance", "mode=max")
+	}
+	if sbomGenerator, ok := os.LookupEnv(sbomGeneratorEnv); ok {
+		if buildxBuilder {
+			args = append(args, "--sbom", "generator="+sbomGenerator)
+		} else {
+			return fmt.Errorf("have %q but missing %q", sbomGeneratorEnv, buildxBuilderEnv)
+		}
+	}
+	if platform != "" {
+		args = append(args, "--platform", platform)
+	}
+	for _, tag := range tags {
+		args = append(args, "--tag", tag)
+	}
+	if file != "" {
+		args = append(args, "--file", file)
+	}
+	args = append(args, "-")
+
+	if buildxBuilder {
+		args = append(args, "--output", "type=oci")
+		// TODO ,annotation.xyz.tianon.foo=bar,annotation-manifest-descriptor.xyz.tianon.foo=bar (for OCI source annotations, which this function doesn't currently have access to)
+	}
+
+	cmd := exec.Command("docker", args...)
+	cmd.Stdin = context
+
+	run := func() error {
+		return cmd.Run()
+	}
+	if buildxBuilder {
+		run = func() error {
+			pipe, err := cmd.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			defer pipe.Close()
+
+			err = cmd.Start()
+			if err != nil {
+				return err
+			}
+			defer cmd.Process.Kill()
+
+			_, err = containerdImageLoad(pipe)
+			if err != nil {
+				return err
+			}
+			pipe.Close()
+
+			err = cmd.Wait()
+			if err != nil {
+				return err
+			}
+
+			desc, err := containerdImageLookup(tags[0])
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Importing %s into Docker\n", desc.Digest)
+			err = containerdDockerLoad(*desc, tags)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+	}
+
+	// intentionally not touching os.Stdout because "buildx build" does *not* put any build output to stdout and in some cases (see above) we use stdout to capture an OCI tarball and pipe it into containerd
+	if debugFlag {
+		cmd.Stderr = os.Stderr
+		fmt.Printf("$ docker %q\n", args)
+		return run()
+	} else {
+		buf := &bytes.Buffer{}
+		cmd.Stderr = buf
+		err := run()
 		if err != nil {
 			err = cli.NewMultiError(err, fmt.Errorf(`docker %q output:%s`, args, "\n"+buf.String()))
 		}

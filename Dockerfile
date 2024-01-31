@@ -1,4 +1,4 @@
-FROM golang:1.16-bullseye AS build
+FROM golang:1.20-bullseye AS build
 
 SHELL ["bash", "-Eeuo", "pipefail", "-xc"]
 
@@ -12,7 +12,7 @@ COPY . .
 RUN CGO_ENABLED=0 ./bashbrew.sh --version; \
 	cp -al bin/bashbrew /
 
-FROM tianon/docker-tianon
+FROM infosiftr/moby
 
 SHELL ["bash", "-Eeuo", "pipefail", "-xc"]
 
