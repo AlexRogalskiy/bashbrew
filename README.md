@@ -75,7 +75,6 @@ Namespace: jsmith
 
 A more complex example:
 
-```
 # comments are allowed anywhere (and are ignored)
 Library: /mnt/docker/official-images/library
 Cache: /mnt/docker/bashbrew-cache
