@@ -1,9 +1,12 @@
 # Bashbrew (`bashbrew`)
 
+
 [![Jenkins Build Status](https://doi-janky.infosiftr.net/job/bashbrew/job/master/badge/icon?subject=Jenkins)](https://doi-janky.infosiftr.net/job/bashbrew/job/master/) [![GitHub CI](https://github.com/docker-library/bashbrew/workflows/GitHub%20CI/badge.svg?branch=master&event=push)](https://github.com/docker-library/bashbrew/actions?query=workflow%3A%22GitHub+CI%22)
 
+
+`$ bashbrew --help`
+
 ```console
-$ bashbrew --help
 NAME:
    bashbrew - canonical build tool for the official images
 
