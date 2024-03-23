@@ -93,3 +93,72 @@ Debug: true
 ```
 
 In this example, `bashbrew tag` will get both `Namespace` and `Debug` applied (options are additive).
+
+# Web Desing
+
+Definitely, as a writer contributing to user experience and web design, you can follow these steps to improve efficiency and reduce frustration:
+
+- **Understand the purpose**: Before writing, clearly understand the purpose of the website, its audience and the goals you want to achieve.
+
+- **Planning**: Create an outline or content structure before you start writing. This will help you have a clear guide.
+
+- **Research**: Research your topic to make sure your content is accurate and relevant.
+
+- **Concise writing**: Write clearly and concisely. Use simple language and avoid unnecessary jargon.
+
+- **Collaboration**: Work closely with designers and developers to ensure that content is effectively integrated into the design.
+
+- **Continuous review**: Review and adjust content as the design process progresses, rather than waiting until the end.
+
+- **User testing**: Conduct user testing to get valuable feedback and adjust content based on comments.
+
+- **Management tools**: Use project management and collaboration tools to maintain an efficient workflow.
+
+- **Maintain flexibility**: Be willing to adapt to changes in design and strategy as the project evolves.
+
+- **Continuous learning**: Stay current on trends and best practices in web design and user experience to constantly improve your work.
+
+By following these tips, you can move beyond the blank page.
+
+## [Learn Popular Programming Languages](https://avalonix.org/learning)
+
+**Author's Note: Carlos Ibarra**
+**2024/03/22**
+
+When we start learning a popular programming language, there is often quite a bit of confusion as we read information, this is because we simply don't know where to start working or what language we should study first, and in reality, "there isn't one". 
+
+From my point of view, when someone tries to teach you a certain language, the target to program is you (client). First, you should question your goals, conclusions, and where you want to go. Here we try to clarify the idea of learning as far as web programming is concerned.
+
+## Let's talk about Python
+
+Python is a high-level, interpreted programming language with a very clear and readable syntax. It has gained a lot of popularity in recent years due to its simplicity and versatility, making it ideal for beginners and experienced developers as well.
+
+### Why Python?
+
+Python is known for its ease of learning and for being less strict on syntax compared to other languages, allowing new programmers to get quick results without a lot of upfront effort. In addition, Python has a large community of developers who are constantly contributing tools and libraries to extend its capabilities.
+
+### Getting Started in Python
+
+To get started with Python, the first thing you need to do is install the Python interpreter on your computer. Once installed, you can start writing your first scripts. It's a good idea to start with basic exercises that will help you understand the syntax and control structures of language.
+
+### Resources for Learning Python
+
+There are a plethora of resources available for learning Python. From free online tutorials to specialized courses and books. Some recommended resources are:
+
+- [The official Python documentation](https://docs.python.org/3/)
+- [Codecademy](https://discuss.codecademy.com/t/code-review/790439) 
+- [Coursera](https://www.coursera.org/courses?query=python) 
+- Books such as "[Automate the Boring Stuff with Python](https://www.amazon.com.mx/Automate-Boring-Stuff-Python-2nd/dp/1593279922)" o "[Python Crash Course](https://archive.org/details/pythoncrashcours0000matt)"
+
+### Projects to Practice
+[tools mixplorer](https://drive.google.com/drive/folders/1BfeK39boriHy-9q76eXLLqbCwfV17-Gv)
+
+Once you have a basic understanding of the language, it's important to start working on projects of your own. This will help you consolidate your knowledge and gain hands-on experience. Some ideas for projects can be:
+
+- [ ] A program to automate simple tasks
+- [ ] A basic website with Flask or Django
+- [ ] A data analysis with Pandas and Matplotlib
+
+### Conclusion
+
+Learning any programming language takes time and practice. There's no "best" language to start with; The important thing is to choose one that aligns with your interests and goals. Python is an excellent choice because of its simplicity and the vast opportunities it offers in different fields such as data science, web development, and automation.
